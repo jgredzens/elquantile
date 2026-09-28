@@ -1,0 +1,613 @@
+---
+title: "Quantile inference and study planning with elquantile"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+    mathjax: null
+    pandoc_args: ["--mathml"]
+bibliography: references.bib
+link-citations: true
+vignette: >
+  %\VignetteIndexEntry{Quantile inference and study planning with elquantile}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE, comment = "#>", error = FALSE, cache = FALSE,
+  fig.width = 6.2, fig.height = 3.8, dpi = 96, out.width = "100%"
+)
+library(elquantile)
+```
+
+This tutorial follows an analysis from a one-sample quantile question to
+independent-group comparisons and study planning. It also explains how to
+compare Bartlett corrections and inspect numerical diagnostics. All displayed
+results are calculated from the accompanying code; the small simulations are
+examples, not a comparison of the methods' statistical performance.
+
+## Choose the scientific target
+
+Let $q_\tau$ be a population quantile at probability $\tau$, such as the
+median at $\tau=0.5$. Under the continuous-population assumptions used here,
+$P(X\leq q_\tau)=\tau$. The EL constructions use this identity without
+specifying an entire parametric distribution for inference.
+
+| Design | Target | Main function |
+|:---|:---|:---|
+| One sample | Population quantile | `elq_one_sample()` |
+| Paired observations | Quantile of within-pair differences $X-Y$ | `elq_two_sample(paired = TRUE)` |
+| Two independent samples | Difference of marginal quantiles $q_{\tau,X}-q_{\tau,Y}$ | `elq_two_sample()` |
+| Independent groups | Equality of their quantiles at one specified $\tau$ | `elq_k_sample()` or `elq_anova()` |
+
+The quantile of a difference is generally not the difference of quantiles.
+Specify the target before choosing a method. Unequal sample sizes and group
+variances are allowed in the independent-group designs.
+
+The intended setting has independent observations, or independent pairs,
+unique target quantiles, and positive densities in their neighborhoods.
+Smoothing methods require additional kernel, bandwidth, and smoothness
+conditions. Clustered observations, dependent repeated measurements beyond
+independent pairs, censored responses, and discrete-population quantile
+inference require separate methods.
+
+The current implementation requires finite numeric vectors and **rejects
+ties**. This is a conservative implementation restriction, not a universal
+requirement of empirical likelihood. Many EL criteria are computable with
+repeated values, but interpolation, bandwidth choice, and calibration need
+method-specific treatment. Do not add arbitrary jitter simply to bypass the
+check. Missing observations are not dropped automatically.
+
+## Start with one sample
+
+Generate a reproducible sample from an exponential distribution. Its
+population median is $\log(2)$; the distribution is used here to make the
+example's target known, not as an assumption supplied to the inference engine.
+
+```{r one-sample}
+set.seed(2701)
+x <- rexp(80)
+tau <- 0.5
+q0 <- log(2)
+
+one <- elq_one_sample(
+  x, q0 = q0, tau = tau, method = "chen_hall", conf.int = TRUE
+)
+one
+```
+
+The output reports the empirical quantile estimate, statistic, p-value, and a
+two-sided confidence interval. A small p-value is evidence against the
+specified quantile. The printed estimate uses R's type-1 empirical quantile;
+it need not equal the minimizer of a smoothed likelihood criterion.
+
+All scalar method statistics use the $-2\log R$ scale, or the stated
+likelihood-ratio analogue, with first-order $\chi^2_1$ calibration.
+
+| `method` | Construction |
+|:---|:---|
+| `"el"` | Ordinary indicator-based EL |
+| `"adimari"` | Midpoint interpolation in the explicit Bernoulli KL criterion |
+| `"chen_hall"` | Kernel-smoothed estimating equations and an EL dual solve |
+| `"chen_hall_bartlett"` | Chen-Hall statistic divided by a Bartlett scale |
+| `"zhou_jing"` | A signed-kernel distribution estimate in the Bernoulli KL criterion |
+| `"ael"` | EL with an added pseudo estimating value |
+
+Adimari's interpolation [@adimari1998], Chen-Hall smoothing
+[@chenhall1993], and Zhou-Jing substitution [@zhoujing2003] are distinct
+constructions. The AEL option adapts the estimating-equation adjustment of
+@chen2008 to quantiles; it is different from Zhou-Jing's use of "adjusted."
+An AEL statistic is finite even when ordinary EL has no positive-likelihood
+solution.
+
+### Inspect a likelihood curve
+
+A likelihood curve shows which candidate quantiles are compatible with the
+data under the selected criterion. The horizontal line is the first-order
+95% confidence-set cutoff.
+
+```{r likelihood-curve, fig.cap="Adimari criterion for the exponential sample. Candidate quantiles below the dashed chi-square cutoff form the accepted region."}
+profile <- elq_profile(
+  x, theta = seq(0.2, 1.5, length.out = 180),
+  tau = tau, method = "adimari"
+)
+plot(profile, conf.level = 0.95)
+```
+
+Confidence sets are returned as **closed hulls**. Where the method permits
+disconnected sets, inspect the retained components rather than interpreting
+every point in the hull as accepted by the test:
+
+```{r confidence-components}
+zj_ci <- elq_confint(x, tau = tau, method = "zhou_jing")
+zj_ci
+attr(zj_ci, "components")
+```
+
+The Zhou-Jing kernel is signed; its integrated function can be nonmonotone.
+The implementation retains that feature and assigns an infinite statistic
+outside its valid open probability branch. AEL intervals can be unbounded.
+
+## Compare the two Bartlett corrections
+
+Chen-Hall uses
+\[
+g_i(\theta)=G\!\left(\frac{\theta-X_i}{h}\right)-\tau.
+\]
+For the empirical correction, the package calculates
+\[
+\widehat\mu_r=\frac1n\sum_{i=1}^n
+\left\{G\!\left(\frac{\widehat q_\tau-X_i}{h}\right)-\tau\right\}^r,
+\qquad
+\widehat\beta=
+\frac{\widehat\mu_4}{2\widehat\mu_2^2}
+-\frac{\widehat\mu_3^2}{3\widehat\mu_2^3}.
+\]
+These are moments of the estimating values about zero. The quantile
+$\widehat q_\tau$ is the ordinary type-1 sample quantile.
+
+The simpler correction uses the population factor's limit as $h\to0$:
+\[
+\beta_0=\frac{1-\tau+\tau^2}{6\tau(1-\tau)}.
+\]
+At the median, $\beta_0=0.5$. This constant is a **correction factor**,
+not the test statistic. Both variants retain the sample-dependent smoothed
+statistic and calculate $W_{\mathrm{BC}}=W_h/(1+\beta/n)$.
+
+Use the same kernel and explicit bandwidth to isolate the effect of the
+correction:
+
+```{r bartlett-comparison}
+h <- elq_bandwidth(x, method = "chen_hall_bartlett")
+b_plugin <- elq_bartlett(x, tau = tau, bandwidth = h, type = "plugin")
+b_limit <- elq_bartlett(x, tau = tau, type = "limit")
+
+w <- c(
+  uncorrected = elq_statistic(
+    x, theta = q0, tau = tau, method = "chen_hall", bandwidth = h
+  ),
+  plugin = elq_statistic(
+    x, theta = q0, tau = tau, method = "chen_hall_bartlett",
+    bandwidth = h, bartlett = "plugin"
+  ),
+  limit = elq_statistic(
+    x, theta = q0, tau = tau, method = "chen_hall_bartlett",
+    bandwidth = h, bartlett = "limit"
+  )
+)
+knitr::kable(
+  data.frame(
+    version = names(w), factor = c(0, b_plugin, b_limit),
+    statistic = unname(w), p.value = pchisq(w, df = 1, lower.tail = FALSE)
+  ),
+  row.names = FALSE, digits = 4
+)
+```
+
+The default kernel is biweight. Default bandwidths use
+$\operatorname{IQR}(x)/(2\Phi^{-1}(0.75))$ multiplied by $n^{-1/2}$
+for uncorrected Chen-Hall and $n^{-3/4}$ for the corrected version.
+Thus, leaving both bandwidths at their defaults changes smoothing as well
+as the correction.
+
+The paper's full $O(n^{-2})$ coverage result requires its stated regularity
+conditions and bandwidth restrictions. The limiting factor has a different
+accuracy result [@chenhall1993, Section 4]. Neither result automatically
+applies to arbitrary data-dependent bandwidths or independent-group
+extensions. The package does not implement a separate Bartlett-corrected AEL.
+
+For the paper's simulation kernel, which has support
+$[-\sqrt{5},\sqrt{5}]$, use `kernel = "epanechnikov"` and
+`bandwidth = sqrt(5) * h_paper`. The package's Epanechnikov option is
+parameterized on $[-1,1]$.
+
+## Analyze paired or independent samples
+
+### Paired observations
+
+Rows must identify the same pair in both vectors. The package forms the
+differences before sorting and applies the one-sample engine to them:
+
+```{r paired}
+set.seed(2702)
+before <- rnorm(60)
+after <- before + rnorm(60, mean = 0.25, sd = 0.8)
+
+elq_two_sample(
+  before, after, paired = TRUE, delta = 0, tau = 0.5,
+  method = "chen_hall_bartlett", conf.int = TRUE
+)
+```
+
+This tests whether the median of `before - after` is zero. Here the
+population median difference is $-0.25$. Dependence within each pair is
+allowed; independence across pairs is assumed.
+
+### Independent samples
+
+For $q_{\tau,A}-q_{\tau,B}=\delta_0$, the constrained statistic is
+\[
+T(\delta_0)=
+\inf_t\{W_A(t+\delta_0)+W_B(t)\}
+-\inf_u W_A(u)-\inf_v W_B(v).
+\]
+The nuisance parameter $t$ is profiled out. Subtraction of the separate
+minima matters for stepwise methods, whose unrestricted minima need not
+equal zero. The reference distribution has one degree of freedom.
+
+```{r independent}
+set.seed(2703)
+A <- rnorm(60)
+B <- rnorm(90, mean = 0.4, sd = 2)
+two <- elq_two_sample(A, B, delta = 0, tau = 0.5, method = "chen_hall")
+two
+two$optimizer
+two$refinement.gap
+```
+
+For independent groups, `"chen_hall_bartlett"` corrects each group's
+criterion before profiling. This is an experimental finite-sample
+modification with first-order calibration; a joint two-sample
+Bartlett-correction theorem has not been established for this implementation.
+
+Independent-difference intervals for all methods are available by subtracting
+two marginal confidence hulls. For overall level $1-\alpha$, each marginal
+interval uses level $1-\alpha/2$:
+
+```{r independent-intervals}
+elq_confint(
+  A, B, tau = 0.5, method = "chen_hall", interval = "bonferroni"
+)
+```
+
+If the marginal intervals are $[L_A,U_A]$ and $[L_B,U_B]$, the returned
+interval is $[L_A-U_B,U_A-L_B]$. Its coverage depends on the marginal
+calibrations; there is no automatic finite-sample guarantee. It need not
+invert the profile test. Direct profile-difference hulls are currently
+implemented for `"el"` and `"ael"`:
+
+```{r step-profile-interval}
+elq_confint(A, B, method = "el", interval = "profile")
+```
+
+## Compare several groups and report post-hoc results
+
+The omnibus null states that all group quantiles at a specified $\tau$
+are equal. The package compares a common-quantile fit with separate group
+fits:
+\[
+T=\inf_t\sum_{j=1}^k W_j(t)
+-\sum_{j=1}^k\inf_{q_j}W_j(q_j).
+\]
+Its first-order reference distribution is $\chi^2_{k-1}$, with a fixed
+number of independent groups and appropriate regularity conditions.
+
+```{r groups}
+set.seed(2704)
+groups <- list(A = A, B = B, C = rnorm(75, mean = 0.7, sd = 1.5))
+elq_k_sample(groups, tau = 0.5, method = "el")
+```
+
+For a data-frame interface, `elq_anova(value ~ treatment, data = data)`
+accepts one response and one grouping variable. This is a quantile equality
+test; factorial effects and repeated-measures models are not fitted.
+
+For post-hoc analysis, specify the full comparison family in one call:
+
+```{r posthoc}
+post <- elq_posthoc(
+  groups, tau = c(0.5, 0.75), method = "el",
+  p.adjust.method = "holm", conf.int = TRUE
+)
+knitr::kable(
+  post[c("group1", "group2", "tau", "estimate", "p.adj",
+         "conf.low", "conf.high")],
+  digits = 4, row.names = FALSE
+)
+```
+
+These three pairs at two quantile levels form **one family of six tests**.
+Holm adjustment is applied across all six p-values. The reported intervals
+use a separate Bonferroni construction; they are not inversions of
+Holm-adjusted p-values. Post-hoc testing is not automatically gated by an
+omnibus rejection. The procedure inherits the calibration limits of its
+constituent tests.
+
+## Plan power and sample size
+
+### Analytical planning
+
+Analytical power requires the alternative population quantiles $q_j$
+and densities $f_j(q_j)$, together with sample sizes $n_j$. A quantile
+difference alone does not specify sampling variability:
+\[
+V_j=\frac{\tau(1-\tau)}{n_j f_j(q_j)^2}.
+\]
+For a full-row-rank contrast matrix $C$, let $d=Cq-d_0$. The calculator
+uses
+\[
+\lambda=d^\top\{C\operatorname{diag}(V_j)C^\top\}^{-1}d,
+\qquad
+\Pr\{\chi^2_r(\lambda)>\chi^2_{r,1-\alpha}\},
+\]
+where $r$ is the number of contrasts. By default, $C$ compares all
+groups to the final group, giving $r=k-1$. One sample uses $r=1$.
+
+This is a shared local asymptotic approximation, not method-specific
+finite-sample EL power. For a single contrast, directional planning is
+also available through `alternative`.
+
+For normal groups with medians 0 and 0.5 and standard deviations 1 and 2:
+
+```{r analytical-power}
+q_alt <- c(0, 0.5)
+f_alt <- dnorm(0) / c(1, 2)
+
+elq_power(
+  n = c(100, 150), quantiles = q_alt, density = f_alt, tau = 0.5
+)
+
+plan <- elq_sample_size(
+  power = 0.8, quantiles = q_alt, density = f_alt, ratio = c(1, 2)
+)
+plan
+plan$previous.power
+```
+
+The search finds the smallest integer base size on the specified allocation
+path, with group sizes obtained by rounding up. It does not optimize the
+allocation ratio. The previous base size's power helps check the boundary.
+
+```{r power-curve, fig.cap="Analytical omnibus power for two normal populations with medians 0 and 0.5, standard deviations 1 and 2, and allocation n2 = 2 n1. The dashed line marks the requested 80% power."}
+base_n <- seq(20, 240, by = 20)
+power_values <- vapply(
+  base_n,
+  function(nn) elq_power(
+    n = c(nn, 2 * nn), quantiles = q_alt, density = f_alt
+  )$power,
+  numeric(1)
+)
+plot(
+  base_n, power_values, type = "b", pch = 19, ylim = c(0, 1),
+  xlab = "Sample size in group 1 (group 2 is twice as large)",
+  ylab = "Approximate power"
+)
+abline(h = 0.8, lty = 2, col = "firebrick")
+points(plan$base.n, plan$power, pch = 4, cex = 1.4)
+```
+
+For paired planning, supply the quantile and density of the **paired
+differences** as a one-sample design. The returned sample size is the number
+of pairs. For example, normally distributed differences with median 0.4
+and standard deviation 1 have density `dnorm(0)` at their median.
+
+`elq_density(x, tau)` supplies a pilot KDE estimate of a density at a
+quantile. Its uncertainty is not propagated automatically; inspect plausible
+density values and confirm the design by simulation.
+
+### Exact count-based planning
+
+For one-sample ordinary EL, AEL, and sign tests, the statistic depends on
+the count $M=\sum_i I(X_i\leq q_0)$. Under a specified alternative,
+$M\sim\operatorname{Binomial}(n,p)$, where $p=F_{\mathrm{alt}}(q_0)$.
+The calculator enumerates all counts and sums their probabilities over
+the rejection region.
+
+```{r exact-power}
+# X ~ N(0.5, 1), testing the null median q0 = 0.
+p_alt <- pnorm(0, mean = 0.5)
+exact_methods <- c("el", "ael", "sign")
+exact_results <- lapply(
+  exact_methods,
+  function(m) elq_power_exact(n = 40, p = p_alt, method = m)
+)
+knitr::kable(
+  data.frame(
+    method = exact_methods,
+    power = vapply(exact_results, function(z) z$power, numeric(1)),
+    null.size = vapply(exact_results, function(z) z$null.size, numeric(1))
+  ),
+  digits = 4
+)
+
+elq_sample_size_exact(
+  power = 0.8, p = p_alt, method = "sign", max.n = 300,
+  max.null.size = 0.05
+)
+```
+
+The argument `p` is **not** the alternative quantile or the target level
+`tau`. Exact enumeration calculates the rejection probability of the
+specified rule; it does not turn a chi-square-calibrated EL rule into an
+exact-level test. Inspect `null.size`. Sample-size enumeration checks
+integers in ascending order because discrete power need not increase
+monotonically. These exact calculators are not implemented for independent
+two-sample or k-sample profile tests.
+
+The three methods have the same rejection counts in the example above, so
+their enumerated powers agree. Agreement at one setting does not imply that
+their finite-sample behavior agrees at other sizes or quantile levels.
+
+### Method-specific simulation
+
+Supply functions that generate each population. The simulation calls the
+actual test, so it captures finite-sample features of that method and its
+numerical search.
+
+```{r simulated-power}
+generators <- list(
+  function(n) rnorm(n),
+  function(n) rnorm(n, mean = 0.5, sd = 2)
+)
+
+sim <- elq_power_sim(
+  n = c(40, 60), generators = generators, method = "chen_hall",
+  nsim = 50, seed = 2705
+)
+knitr::kable(
+  data.frame(
+    power = sim$power, mcse = sim$mcse,
+    lower = unname(sim$mc.interval[1]),
+    upper = unname(sim$mc.interval[2]),
+    successful = sim$valid, failed = sim$failures
+  ),
+  digits = 4
+)
+sim$failure.bounds
+```
+
+Fifty replicates keep this tutorial quick; they are insufficient for a
+precise performance comparison. The Monte Carlo standard error is
+$\{\widehat\pi(1-\widehat\pi)/B_{\mathrm{valid}}\}^{1/2}$, and the
+reported Monte Carlo interval is a Wilson interval. Power is conditional
+on successful replicates; failures, warnings, and bounds obtained by counting
+all failures as rejections or nonrejections remain available.
+
+Under a null-generating distribution the same function estimates **Type I
+error**, not power against an alternative. Assess that as well as power.
+Simulation assessment does not automatically recalibrate the test. These
+functions target the omnibus test, not power for Holm-adjusted post-hoc
+comparisons.
+
+For a larger study, increase `nsim` and keep the raw replicates. This
+deliberately unevaluated example is not run when building the vignette:
+
+```{r research-simulation, eval=FALSE}
+research_run <- elq_power_sim(
+  n = c(40, 60), generators = generators, method = "chen_hall",
+  nsim = 10000, seed = 92705, keep = TRUE
+)
+research_run$replicates
+```
+
+Use the same seed and generators to compare deterministic methods on the
+same datasets. A supplied seed restores the caller's RNG state after the
+simulation. Paired generators must return an $n$-by-2 matrix with rows
+representing pairs.
+
+For a sample-size grid:
+
+```{r simulated-sample-size}
+grid_plan <- elq_sample_size_sim(
+  n.grid = c(60, 120, 240), generators = generators,
+  ratio = c(1, 2), power = 0.8, method = "el",
+  nsim = 100, seed = 2706
+)
+knitr::kable(grid_plan$table, digits = 4)
+grid_plan$selected.n
+```
+
+Selection is restricted to these candidate sizes. It is not proof of the
+globally smallest sample size or a guarantee of achieved population power.
+`criterion = "lower"` instead checks the pointwise Monte Carlo lower limit;
+it does not create simultaneous or post-selection confidence guarantees.
+Confirm a selected design using an independent, larger run.
+
+## Understand the numerical diagnostics
+
+### The EL dual solver
+
+For fixed estimating values $g_i$, `elq_dual()` solves
+\[
+\sum_i\frac{w_i g_i}{1+\lambda g_i}=0,
+\qquad 1+\lambda g_i>0,
+\]
+using a bracketed scalar root search through `stats::uniroot()`. This is
+R's Brent-based root finder, not a generic optimization over all observation
+probabilities. Frequencies `weights` compress repeated estimating values;
+they are not a general survey-weight inference interface.
+
+```{r dual-example}
+dual <- elq_dual(g = c(-0.5, 0.5), weights = c(12, 18))
+dual[c("statistic", "lambda", "probabilities", "residual")]
+```
+
+The two returned probabilities are aggregate masses for the two estimating
+values. They sum to one. The residual measures the estimating constraint's
+numerical error. An infinite statistic can represent no positive-likelihood
+solution rather than an optimizer failure. If some estimating values are
+zero and all others have one sign, a boundary probability vector may satisfy
+the moment constraint while still giving likelihood zero.
+
+### Knots and profiling
+
+"Knots" collect breakpoints and additional useful search points. Ordinary
+EL/AEL use observed values, where the empirical-CDF count changes. Adimari
+uses interpolation breakpoints. Compact-kernel methods include
+$X_i-h,X_i,X_i+h$; Zhou-Jing also includes roots of $F_h(q)=\tau$.
+For Gaussian smoothing, the $X_i\pm10h$ points are numerical search
+points, not finite-support breakpoints.
+
+The independent-group profiler enumerates the stepwise cells exactly.
+Adimari searches all interpolation segments. Other smooth criteria use knots,
+a grid, local `stats::optimize()` searches, and midpoint refinement.
+`optimize()` combines golden-section search and parabolic interpolation.
+A small `refinement.gap` shows stability under the implemented refinement,
+not a guaranteed global minimum.
+
+Increase the grid resolution to assess numerical sensitivity:
+
+```{r profile-diagnostic}
+two_finer <- elq_two_sample(
+  A, B, method = "chen_hall",
+  control = elq_control(grid.points = 161, refine = TRUE)
+)
+knitr::kable(
+  data.frame(
+    grid.points = c(81, 161),
+    statistic = c(unname(two$statistic), unname(two_finer$statistic)),
+    p.value = c(two$p.value, two_finer$p.value),
+    refinement.gap = c(two$refinement.gap, two_finer$refinement.gap)
+  ),
+  digits = 6
+)
+```
+
+The sparse-tail warning checks whether
+$\min_j n_j\min(\tau,1-\tau)<5$. Five is a heuristic, not a theorem or a
+calibration guarantee. Passing this check does not establish accurate Type I
+error. `elq_control(warn = FALSE)` suppresses notices; it does not improve
+statistical or numerical accuracy.
+
+## Reproduce and extend this workflow
+
+The examples use fixed seeds, local simulated data, and public package
+functions. Building the vignette requires no data downloads or user
+credentials. The HTML uses native MathML and embedded figures, so it needs
+no external mathematics service.
+
+After installing a built package, open the tutorial with:
+
+```{r open-vignette, eval=FALSE}
+vignette("quantile-inference", package = "elquantile")
+```
+
+Developers can build the package from its parent directory:
+
+```sh
+R CMD build elquantile
+R CMD check --no-manual elquantile_0.1.0.tar.gz
+```
+
+Install `knitr` and `rmarkdown` and make Pandoc available before building
+from source. They are vignette-building tools, not dependencies of the
+inference functions. Installing the built source archive includes the
+rendered vignette; installing the raw source directory alone does not
+necessarily build it.
+
+For function arguments, see `?elq_test`, `?elq_confint`, `?elq_power`, and
+`?elq_power_sim`. The installed files `doc/METHODS.md` and
+`doc/EXTENDING.md` describe the equations and internal engine contract.
+New group corrections, clustered-data methods, and general contrast tests
+require their own definitions and validation. This tutorial does not
+establish their theory or methodological novelty.
+
+The environment used for this rendering is recorded below.
+
+```{r session-information}
+sessionInfo()
+```
+
+## References

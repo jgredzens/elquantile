@@ -1,0 +1,27 @@
+Package: elquantile
+Type: Package
+Title: Empirical Likelihood Quantile Inference and Study Planning
+Version: 0.1.0
+Authors@R: c(
+    person("Janis", "Gredzens", role = "cre", email = "janis.gredzens@lu.lv", comment = c(ORCID = "0009-0009-4890-4897"))
+    )
+Description: Empirical likelihood inference for population quantiles.
+    Implements unsmoothed empirical likelihood, Adimari interpolation,
+    Chen-Hall smoothing and Bartlett corrections, Zhou-Jing kernel substitution,
+    and pseudo-observation adjusted empirical likelihood. Supports one sample,
+    paired differences, independent quantile differences, independent group
+    comparisons, and multiplicity-adjusted post-hoc tests. Includes local
+    asymptotic, exact count-based, and Monte Carlo power calculations and
+    sample-size planning. Multi-group extensions use first-order calibration;
+    one-sample higher-order results are not asserted for these extensions.
+Maintainer: Janis Gredzens <janis.gredzens@lu.lv>
+License: GPL-3
+Encoding: UTF-8
+Depends: R (>= 3.6.0)
+Imports: stats, utils, graphics
+Suggests:
+    knitr,
+    rmarkdown
+VignetteBuilder: knitr
+NeedsCompilation: no
+Config/roxygen2/version: 8.0.0
